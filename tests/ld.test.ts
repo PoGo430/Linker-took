@@ -71,3 +71,11 @@ describe('linker script generation', () => {
     });
   });
 });
+
+describe('output file keys', () => {
+  it('are unique even when a partition is called "header"', () => {
+    const c = dualPreset(); // contains a partition with id "header"
+    const keys = generateAll(c, computeLayout(c)).map((f) => f.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+});
