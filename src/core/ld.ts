@@ -4,7 +4,7 @@ import { fileSafe, identSafe } from './validate';
 import { formatAddr, formatHex, formatKb } from './units';
 
 export interface OutFile {
-  /** Stable key: partition id, or "header". */
+  /** Unique tab key: "ld:<partition id>" or "file:memory_map.h" (prefixed so a partition id can never collide). */
   key: string;
   filename: string;
   content: string;
@@ -240,7 +240,7 @@ export function generateLdFiles(config: Config, L: Layout): OutFile[] {
       const noinit = L.ram && L.ram.reserved > 0n ? NOINIT_SECTION : '';
       parts.push('', FULL_TEMPLATE.replace('@NOINIT@', noinit).trimEnd());
     }
-    return { key: p.id, filename: `${names[i]}.ld`, content: parts.join('\n') + '\n', lang: 'ld' as const };
+    return { key: `ld:${p.id}`, filename: `${names[i]}.ld`, content: parts.join('\n') + '\n', lang: 'ld' as const };
   });
 }
 
@@ -293,7 +293,7 @@ export function generateHeader(config: Config, L: Layout): OutFile {
     }
   }
   lines.push('', '#endif /* MEMORY_MAP_H */', '');
-  return { key: 'header', filename: 'memory_map.h', content: lines.join('\n'), lang: 'c' };
+  return { key: 'file:memory_map.h', filename: 'memory_map.h', content: lines.join('\n'), lang: 'c' };
 }
 
 export const generateAll = (config: Config, L: Layout): OutFile[] => [...generateLdFiles(config, L), generateHeader(config, L)];
