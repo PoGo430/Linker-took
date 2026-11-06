@@ -7,7 +7,7 @@ export interface Preset {
 }
 
 const part = (id: string, name: string, size: string, color: string, kind: 'shared' | 'update', extra: Partial<PartitionInput> = {}): PartitionInput => ({
-  id, name, size, offset: '', fill: false, color, kind, ...extra,
+  id, name, size, offset: '', fill: false, color, kind, ram: '', ...extra,
 });
 
 export const PRESETS: Preset[] = [
@@ -24,8 +24,24 @@ export const PRESETS: Preset[] = [
         part('header', 'header', '8K', '#eeca3b', 'update'),
         part('app', 'app', '224K', '#54a24b', 'update'),
       ],
-      ram: { enabled: true, start: '0x20000000', size: '128K', reservedTop: '0' },
+      ram: { ...emptyConfig().ram, enabled: true, start: '0x20000000', size: '128K', reservedTop: '0' },
     }),
+  },
+  {
+    id: 'stm32c562re-dual-ramsplit',
+    label: 'STM32C562RE dual-bank + RAM split (boot 32K / app 88K / no-init 8K)',
+    build: () => {
+      const c = PRESETS[0].build();
+      c.partitions[0].ram = 'ram-boot';
+      c.partitions[1].ram = 'ram-boot';
+      c.partitions[2].ram = 'ram-app';
+      c.ram.split = [
+        { id: 'ram-boot', name: 'boot_ram', size: '32K', offset: '', fill: false, color: '#4c78a8', noinit: false },
+        { id: 'ram-app', name: 'app_ram', size: '88K', offset: '', fill: false, color: '#54a24b', noinit: false },
+        { id: 'ram-shared', name: 'shared', size: '8K', offset: '', fill: false, color: '#e45756', noinit: true },
+      ];
+      return c;
+    },
   },
   {
     id: 'generic-single',
@@ -39,7 +55,7 @@ export const PRESETS: Preset[] = [
         part('bootloader', 'bootloader', '16K', '#4c78a8', 'shared'),
         part('app', 'app', '0', '#54a24b', 'update', { fill: true }),
       ],
-      ram: { enabled: true, start: '0x20000000', size: '64K', reservedTop: '0' },
+      ram: { ...emptyConfig().ram, enabled: true, start: '0x20000000', size: '64K', reservedTop: '0' },
     }),
   },
   { id: 'empty', label: 'Empty layout', build: () => emptyConfig() },

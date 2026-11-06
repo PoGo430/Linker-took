@@ -14,6 +14,22 @@ export interface PartitionInput {
   color: string;
   /** shared = identical in both banks (e.g. bootloader); update = target of firmware updates. */
   kind: PartitionKind;
+  /** Id of the RAM region this partition's linker script uses. Empty = default RAM region. Only used when RAM is split. */
+  ram: string;
+}
+
+/** A named slice of RAM. Only used when `ram.split` is non-empty. */
+export interface RamRegionInput {
+  id: string;
+  name: string;
+  size: string;
+  /** Offset from the RAM start; empty = right after the previous region. */
+  offset: string;
+  /** Last region only: take all remaining RAM. */
+  fill: boolean;
+  color: string;
+  /** Shared no-init area (e.g. flags passed bootloader → app); emitted as RAM_NOINIT in every script. At most one. */
+  noinit: boolean;
 }
 
 export interface Config {
@@ -23,7 +39,17 @@ export interface Config {
   alignMode: AlignMode;
   dualBank: boolean;
   partitions: PartitionInput[];
-  ram: { enabled: boolean; start: string; size: string; reservedTop: string };
+  ram: {
+    enabled: boolean;
+    start: string;
+    size: string;
+    /** Legacy single reserve at the top. Ignored while `split` is non-empty. */
+    reservedTop: string;
+    /** Optional RAM split. Empty = classic behaviour (one RAM region + optional reserved top). */
+    split: RamRegionInput[];
+    /** Snap step for dragging RAM regions. */
+    step: string;
+  };
   output: { mode: OutputMode; expressions: boolean; symbols: boolean };
 }
 
@@ -45,7 +71,7 @@ export function emptyConfig(): Config {
     alignMode: 'error',
     dualBank: false,
     partitions: [],
-    ram: { enabled: true, start: '0x20000000', size: '128K', reservedTop: '0' },
+    ram: { enabled: true, start: '0x20000000', size: '128K', reservedTop: '0', split: [], step: '0x100' },
     output: { mode: 'memory', expressions: false, symbols: true },
   };
 }
@@ -80,6 +106,23 @@ export function sanitizeConfig(raw: unknown): Config | null {
       fill: bool(q.fill, false),
       color: /^#[0-9a-f]{6}$/i.test(str(q.color, '')) ? str(q.color, '') : PALETTE[i % PALETTE.length],
       kind: q.kind === 'shared' ? 'shared' : 'update',
+      ram: str(q.ram, ''),
+    };
+  });
+  const rseen = new Set<string>();
+  const split: RamRegionInput[] = (Array.isArray(ram.split) ? ram.split : []).slice(0, 32).map((p, i) => {
+    const q = obj(p);
+    let id = str(q.id, '') || newId();
+    if (rseen.has(id)) id = newId();
+    rseen.add(id);
+    return {
+      id,
+      name: str(q.name, `ram${i + 1}`),
+      size: str(q.size, '0'),
+      offset: str(q.offset, ''),
+      fill: bool(q.fill, false),
+      color: /^#[0-9a-f]{6}$/i.test(str(q.color, '')) ? str(q.color, '') : PALETTE[(i + 3) % PALETTE.length],
+      noinit: bool(q.noinit, false),
     };
   });
   return {
@@ -98,6 +141,8 @@ export function sanitizeConfig(raw: unknown): Config | null {
       start: str(ram.start, d.ram.start),
       size: str(ram.size, d.ram.size),
       reservedTop: str(ram.reservedTop, '0'),
+      split,
+      step: str(ram.step, d.ram.step),
     },
     output: {
       mode: out.mode === 'full' ? 'full' : 'memory',

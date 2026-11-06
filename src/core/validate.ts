@@ -8,6 +8,8 @@ export interface Issue {
   code: string;
   message: string;
   partitionId?: string;
+  /** Set for issues about a RAM region. */
+  ramId?: string;
 }
 
 /** Characters usable in a file name / C identifier derived from a partition name. */
@@ -19,8 +21,8 @@ export const identSafe = (name: string): string => {
 
 export function validate(config: Config, L: Layout): Issue[] {
   const issues: Issue[] = [];
-  const add = (severity: Severity, code: string, message: string, partitionId?: string) =>
-    issues.push({ severity, code, message, partitionId });
+  const add = (severity: Severity, code: string, message: string, partitionId?: string, ramId?: string) =>
+    issues.push({ severity, code, message, partitionId, ramId });
   const alignSev: Severity = config.alignMode === 'warning' ? 'warning' : 'error';
   const bankWord = L.dual ? 'bank' : 'region';
 
@@ -107,7 +109,77 @@ export function validate(config: Config, L: Layout): Issue[] {
       else if (L.ram.size > 0n && L.ram.reserved >= L.ram.size) add('error', 'ram-reserved', `Reserved RAM ${hexKb(L.ram.reserved)} leaves no room in the ${hexKb(L.ram.size)} RAM`);
     }
   }
+  if (L.ram && L.ram.split.length && !L.ram.errors.length) validateRamSplit(config, L, add);
   return issues;
+}
+
+type Add = (severity: Severity, code: string, message: string, partitionId?: string, ramId?: string) => void;
+
+/** Checks for a split RAM: sizes, overlaps, gaps, alignment, no-init rules and partition → region references. */
+function validateRamSplit(config: Config, L: Layout, add: Add): void {
+  const ram = L.ram!;
+  const total = ram.size;
+  if (ram.stepError) add('error', 'ram-step', `RAM snap step: ${ram.stepError}`);
+  const names = new Map<string, string>();
+  let noinitCount = 0;
+  for (const r of ram.split) {
+    const label = r.name.trim() || `RAM region #${r.index + 1}`;
+    if (r.noinit) noinitCount++;
+    if (!r.name.trim()) add('error', 'ram-name-empty', `RAM region #${r.index + 1} has no name`, undefined, r.id);
+    else {
+      const key = identSafe(r.name).toLowerCase();
+      if (names.has(key)) add('error', 'ram-name-duplicate', `Duplicate RAM region name "${r.name}"`, undefined, r.id);
+      names.set(key, r.id);
+    }
+    if (r.sizeError) add('error', 'ram-size-invalid', `RAM ${label}: size — ${r.sizeError}`, undefined, r.id);
+    if (r.offsetError) add('error', 'ram-offset-invalid', `RAM ${label}: offset — ${r.offsetError}`, undefined, r.id);
+    if (r.fillRequested && !r.fill) add('error', 'ram-fill-not-last', `RAM ${label}: "fill remaining" is only allowed on the last region`, undefined, r.id);
+    if (!r.sizeError) {
+      if (r.size === 0n) add('error', 'ram-size-zero', `RAM ${label}: size is zero${r.fill ? ' (no RAM left to fill)' : ''}`, undefined, r.id);
+      else if (r.size < 0n) add('error', 'ram-size-negative', `RAM ${label}: size is negative (${formatKb(r.size)})`, undefined, r.id);
+    }
+    if (r.offset < 0n) add('error', 'ram-offset-negative', `RAM ${label}: offset ${formatHex(r.offset)} is before the start of RAM`, undefined, r.id);
+    if (r.size > 0n && r.endOffset > total) {
+      add('error', 'ram-exceeds', `RAM ${label}: ends at ${formatAddr(r.end)}, ${hexKb(r.endOffset - total)} beyond the end of RAM (${formatAddr(ram.start + total)})`, undefined, r.id);
+    }
+    if (r.size > 0n && (r.start % 8n !== 0n || r.size % 8n !== 0n)) {
+      add('warning', 'ram-align', `RAM ${label}: start ${formatAddr(r.start)} / size ${formatHex(r.size)} should be 8-byte aligned (Cortex-M stack alignment)`, undefined, r.id);
+    }
+    if (config.output.mode === 'full' && !r.noinit && r.size > 0n && r.size < 0x600n) {
+      add('warning', 'ram-too-small', `RAM ${label}: ${hexKb(r.size)} is below the 0x600 heap + stack reserved by the full template`, undefined, r.id);
+    }
+  }
+  if (noinitCount > 1) add('error', 'ram-noinit-multiple', 'Only one RAM region can be the shared no-init area');
+  if (noinitCount === ram.split.length) add('error', 'ram-no-main', 'Every RAM region is no-init — at least one normal RAM region is needed');
+
+  // overlaps
+  const valid = ram.split.filter((r) => r.size > 0n).sort((a, b) => (a.offset < b.offset ? -1 : a.offset > b.offset ? 1 : a.index - b.index));
+  let reach: (typeof valid)[number] | null = null;
+  for (const r of valid) {
+    if (reach && r.offset < reach.endOffset) {
+      const ovEnd = r.endOffset < reach.endOffset ? r.endOffset : reach.endOffset;
+      add('error', 'ram-overlap', `RAM "${r.name}" overlaps "${reach.name}": ${formatAddr(ram.start + r.offset)}–${formatAddr(ram.start + ovEnd - 1n)} (${hexKb(ovEnd - r.offset)}). To share RAM, assign both partitions to the same region instead.`, undefined, r.id);
+    }
+    if (!reach || r.endOffset > reach.endOffset) reach = r;
+  }
+  for (const sg of ram.segments) {
+    if (sg.kind === 'gap') add('warning', 'ram-gap', `RAM gap of ${hexKb(sg.endOffset - sg.offset)}: ${formatAddr(ram.start + sg.offset)}–${formatAddr(ram.start + sg.endOffset - 1n)}`);
+  }
+  if (total > 0n) add('info', 'ram-unused', `${ram.unused} bytes RAM unused = ${hexKb(ram.unused)}`);
+
+  // partitions → regions
+  const byId = new Map(ram.split.map((r) => [r.id, r]));
+  const hasMain = ram.split.some((r) => !r.noinit);
+  for (const p of config.partitions) {
+    const label = p.name.trim() || 'partition';
+    if (p.ram) {
+      const r = byId.get(p.ram);
+      if (!r) add('error', 'ram-ref-missing', `${label}: assigned RAM region no longer exists`, p.id);
+      else if (r.noinit) add('error', 'ram-ref-noinit', `${label}: cannot use the shared no-init region "${r.name}" as its main RAM`, p.id);
+    } else if (!hasMain) {
+      add('error', 'ram-ref-none', `${label}: no normal RAM region to use`, p.id);
+    }
+  }
 }
 
 export const hasErrors = (issues: Issue[]): boolean => issues.some((i) => i.severity === 'error');

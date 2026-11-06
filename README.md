@@ -11,6 +11,7 @@ A static, browser-only tool for planning flash/RAM partitions and generating **G
 - **Live map**: proportional blocks, hatched gaps/free space, tooltips with exact addresses. Drag a block's right edge to resize (snaps to page size), drag a block to reorder; typed values and graphic stay in sync. Keyboard: handle ←/→ (Shift ×10), block Alt+←/→, row ↑/↓ buttons.
 - **Validation**: overlap, exceeding the region, gaps, page misalignment (error *or* warning), zero/negative sizes, bad/duplicate names, RAM reserve, and the *bytes unused* total.
 - **Dual-bank mirror** (see below).
+- **RAM split** (optional, see below): carve RAM into regions, give each partition its own, and add a shared no-init area.
 - **Output**: per-partition `<name>.ld`, `memory_map.h`, tabs with syntax highlighting, copy / download / **zip** (built client-side).
 - **Persistence & sharing**: JSON save/load, automatic localStorage, shareable URL hash (`#c=…`), presets, light/dark theme.
 
@@ -36,6 +37,20 @@ Options:
 | Reserved RAM at top | Splits off `RAM_NOINIT` (and a `.noinit` section in the full template) for flags shared by bootloader and app |
 
 `memory_map.h` defines `PART_<NAME>_START / _SIZE / _END` (END is **exclusive**), region/page/bank constants, RAM constants, and in dual-bank mode `PART_<NAME>_INACTIVE_START / _END`. Include it from both bootloader and application so the layout has one source of truth.
+
+## RAM split
+
+By default the whole RAM is one `RAM` region (optionally with *Reserved RAM at top*), exactly as before. Click **Split RAM into regions** to define named RAM regions instead:
+
+- Regions have a name, size, optional offset, colour and *Fill* (last region), and are shown on their own draggable map (resize snaps to a configurable step, default `0x100`; keyboard and reorder work like the flash map).
+- Each partition has a **RAM region** selector; its `.ld` gets that region as `RAM`. Unassigned partitions use the first normal region.
+- At most one region can be flagged **No-init**: it is added to every script as `RAM_NOINIT` (plus a `.noinit` section in the full template) for flags shared between bootloader and application.
+- Splitting an existing layout converts the reserved-at-top value into an equivalent main + no-init pair, so the generated `MEMORY` block does not change. *Merge back* reverses it.
+- Output: `RAM_REGION_<NAME>_START/_SIZE/_END` in `memory_map.h`, and `_ram_<name>_start/_size/_end` symbols.
+
+RAM verification (shown inline): overlaps (to share RAM, assign both partitions to the same region), regions past the end of RAM, zero/negative sizes, gaps, 8-byte alignment, duplicate/empty names, more than one no-init region, partitions pointing at a missing or no-init region, regions too small for the template's heap + stack (full template only), and the *bytes RAM unused* total.
+
+**Compatibility:** every new field is optional. Saved JSON, localStorage data and share links created before the RAM split existed load unchanged and generate identical files (covered by tests).
 
 ## Dual-bank mode
 
