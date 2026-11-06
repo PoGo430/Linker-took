@@ -32,11 +32,39 @@ export interface Segment {
   endOffset: bigint;
 }
 
+export interface ResolvedRamRegion {
+  id: string;
+  index: number;
+  name: string;
+  color: string;
+  noinit: boolean;
+  fill: boolean;
+  fillRequested: boolean;
+  offset: bigint;
+  size: bigint;
+  endOffset: bigint;
+  /** Absolute address. */
+  start: bigint;
+  /** Exclusive absolute end. */
+  end: bigint;
+  sizeError?: string;
+  offsetError?: string;
+}
+
 export interface RamLayout {
   start: bigint;
   size: bigint;
+  /** Legacy reserved-at-top bytes (0 once the RAM is split). */
   reserved: bigint;
   errors: string[];
+  /** Resolved RAM regions; empty = classic single-region behaviour. */
+  split: ResolvedRamRegion[];
+  /** Gaps / free space inside the RAM (split mode only). */
+  segments: Segment[];
+  used: bigint;
+  unused: bigint;
+  step: bigint;
+  stepError?: string;
 }
 
 export interface Layout {
@@ -59,22 +87,26 @@ export interface Layout {
 
 const clamp = (v: bigint, lo: bigint, hi: bigint) => (v < lo ? lo : v > hi ? hi : v);
 
-export function computeLayout(config: Config): Layout {
-  const rs = parseValue(config.region.start);
-  const rz = parseValue(config.region.size);
-  const pg = parseValue(config.page);
-  const regionStart = rs.ok ? rs.value : 0n;
-  const regionSize = rz.ok ? rz.value : 0n;
-  const page = pg.ok ? pg.value : 0n;
-  const dual = config.dualBank;
-  const bankSize = dual ? regionSize / 2n : regionSize;
-  const bankStarts = dual ? [regionStart, regionStart + bankSize] : [regionStart];
+interface SeqInput {
+  size: string;
+  offset: string;
+  fill: boolean;
+}
+interface SeqOut {
+  offset: bigint;
+  size: bigint;
+  endOffset: bigint;
+  fill: boolean;
+  sizeError?: string;
+  offsetError?: string;
+}
 
-  const partitions: ResolvedPartition[] = [];
+/** Place items back to back (or at fixed offsets) inside `total` bytes; "fill" applies to the last item only. */
+function resolveSeq(items: SeqInput[], total: bigint): SeqOut[] {
+  const out: SeqOut[] = [];
   let cursor = 0n;
-  const n = config.partitions.length;
-  config.partitions.forEach((p, index) => {
-    const isLast = index === n - 1;
+  items.forEach((p, index) => {
+    const isLast = index === items.length - 1;
     const off = p.offset.trim() === '' ? null : parseValue(p.offset);
     const offsetError = off && !off.ok ? off.error : undefined;
     const offset = off && off.ok ? off.value : cursor;
@@ -82,7 +114,7 @@ export function computeLayout(config: Config): Layout {
     let size: bigint;
     let sizeError: string | undefined;
     if (fill) {
-      size = bankSize - offset;
+      size = total - offset;
     } else {
       const sz = parseValue(p.size);
       sizeError = sz.ok ? undefined : sz.error;
@@ -90,29 +122,16 @@ export function computeLayout(config: Config): Layout {
     }
     const endOffset = offset + size;
     cursor = size > 0n ? endOffset : offset;
-    partitions.push({
-      id: p.id,
-      index,
-      name: p.name,
-      kind: p.kind,
-      color: p.color,
-      fill,
-      fillRequested: p.fill,
-      offset,
-      size,
-      endOffset,
-      start: regionStart + offset,
-      end: regionStart + endOffset,
-      inactiveStart: dual ? regionStart + bankSize + offset : null,
-      sizeError,
-      offsetError,
-    });
+    out.push({ offset, size, endOffset, fill, sizeError, offsetError });
   });
+  return out;
+}
 
-  // Free space / gaps (bank-relative), computed from the union of partition intervals.
-  const ivs = partitions
+/** Free space / gaps (relative to 0..total) from the union of the given intervals. */
+function freeSpace(spans: { offset: bigint; endOffset: bigint; size: bigint }[], total: bigint) {
+  const ivs = spans
     .filter((p) => p.size > 0n)
-    .map((p) => ({ lo: clamp(p.offset, 0n, bankSize), hi: clamp(p.endOffset, 0n, bankSize) }))
+    .map((p) => ({ lo: clamp(p.offset, 0n, total), hi: clamp(p.endOffset, 0n, total) }))
     .filter((v) => v.lo < v.hi)
     .sort((a, b) => (a.lo < b.lo ? -1 : a.lo > b.lo ? 1 : 0));
   const segments: Segment[] = [];
@@ -125,8 +144,43 @@ export function computeLayout(config: Config): Layout {
       at = v.hi;
     }
   }
-  if (at < bankSize) segments.push({ kind: 'free', offset: at, endOffset: bankSize });
-  const unused = bankSize > 0n ? bankSize - used : 0n;
+  if (at < total) segments.push({ kind: 'free', offset: at, endOffset: total });
+  return { segments, used, unused: total > 0n ? total - used : 0n };
+}
+
+export function computeLayout(config: Config): Layout {
+  const rs = parseValue(config.region.start);
+  const rz = parseValue(config.region.size);
+  const pg = parseValue(config.page);
+  const regionStart = rs.ok ? rs.value : 0n;
+  const regionSize = rz.ok ? rz.value : 0n;
+  const page = pg.ok ? pg.value : 0n;
+  const dual = config.dualBank;
+  const bankSize = dual ? regionSize / 2n : regionSize;
+  const bankStarts = dual ? [regionStart, regionStart + bankSize] : [regionStart];
+
+  const seq = resolveSeq(config.partitions, bankSize);
+  const partitions: ResolvedPartition[] = config.partitions.map((p, index) => {
+    const r = seq[index];
+    return {
+      id: p.id,
+      index,
+      name: p.name,
+      kind: p.kind,
+      color: p.color,
+      fill: r.fill,
+      fillRequested: p.fill,
+      offset: r.offset,
+      size: r.size,
+      endOffset: r.endOffset,
+      start: regionStart + r.offset,
+      end: regionStart + r.endOffset,
+      inactiveStart: dual ? regionStart + bankSize + r.offset : null,
+      sizeError: r.sizeError,
+      offsetError: r.offsetError,
+    };
+  });
+  const { segments, used, unused } = freeSpace(partitions, bankSize);
 
   // RAM
   let ram: RamLayout | null = null;
@@ -137,12 +191,43 @@ export function computeLayout(config: Config): Layout {
     const errors: string[] = [];
     if (!a.ok) errors.push(`RAM start: ${a.error}`);
     if (!b.ok) errors.push(`RAM size: ${b.error}`);
-    if (!c.ok) errors.push(`Reserved RAM: ${c.error}`);
+    if (!c.ok && !config.ram.split.length) errors.push(`Reserved RAM: ${c.error}`);
+    const ramStart = a.ok ? a.value : 0n;
+    const ramSize = b.ok ? b.value : 0n;
+    const stepP = parseValue(config.ram.step);
+    const stepOk = stepP.ok && stepP.value > 0n;
+    const seqR = resolveSeq(config.ram.split, ramSize);
+    const split: ResolvedRamRegion[] = config.ram.split.map((r, index) => {
+      const q = seqR[index];
+      return {
+        id: r.id,
+        index,
+        name: r.name,
+        color: r.color,
+        noinit: r.noinit,
+        fill: q.fill,
+        fillRequested: r.fill,
+        offset: q.offset,
+        size: q.size,
+        endOffset: q.endOffset,
+        start: ramStart + q.offset,
+        end: ramStart + q.endOffset,
+        sizeError: q.sizeError,
+        offsetError: q.offsetError,
+      };
+    });
+    const free = split.length ? freeSpace(split, ramSize) : { segments: [], used: 0n, unused: 0n };
     ram = {
-      start: a.ok ? a.value : 0n,
-      size: b.ok ? b.value : 0n,
-      reserved: c.ok ? c.value : 0n,
+      start: ramStart,
+      size: ramSize,
+      reserved: split.length ? 0n : c.ok ? c.value : 0n,
       errors,
+      split,
+      segments: free.segments,
+      used: free.used,
+      unused: free.unused,
+      step: stepOk ? stepP.value : 8n,
+      stepError: stepOk ? undefined : stepP.ok ? 'Step must be greater than zero' : stepP.error,
     };
   }
 

@@ -1,5 +1,5 @@
 import type { Config } from './model';
-import type { Layout, ResolvedPartition } from './layout';
+import type { Layout, ResolvedPartition, ResolvedRamRegion } from './layout';
 import { fileSafe, identSafe } from './validate';
 import { formatAddr, formatHex, formatKb } from './units';
 
@@ -24,8 +24,28 @@ export function baseNames(L: Layout): string[] {
   });
 }
 
-function ramLines(config: Config, L: Layout): string[] {
+/** The RAM region a partition links against in split mode: its assignment, else the first normal region. */
+export function ramRegionFor(config: Config, L: Layout, partitionId: string): ResolvedRamRegion | undefined {
+  const split = L.ram?.split ?? [];
+  const wanted = config.partitions.find((q) => q.id === partitionId)?.ram;
+  return split.find((r) => r.id === wanted && !r.noinit) ?? split.find((r) => !r.noinit);
+}
+
+function regionLine(config: Config, L: Layout, name: string, r: ResolvedRamRegion): string {
+  const base = L.ram!.start;
+  if (config.output.expressions && r.offset !== 0n) {
+    return `  ${name} (xrw) : org = ${formatAddr(base)} + ${formatHex(r.offset)}, len = ${formatHex(r.endOffset)} - ${formatHex(r.offset)}`;
+  }
+  return `  ${name} (xrw) : org = ${formatAddr(r.start)}, len = ${formatHex(r.size)}`;
+}
+
+function ramLines(config: Config, L: Layout, partitionId: string): string[] {
   if (!L.ram) return [];
+  if (L.ram.split.length) {
+    const main = ramRegionFor(config, L, partitionId);
+    const noinit = L.ram.split.find((r) => r.noinit);
+    return [...(main ? [regionLine(config, L, 'RAM', main)] : []), ...(noinit ? [regionLine(config, L, 'RAM_NOINIT', noinit)] : [])];
+  }
   const { start, size, reserved } = L.ram;
   const x = config.output.expressions;
   const usable = size - reserved;
@@ -69,6 +89,18 @@ function symbolLines(config: Config, L: Layout): string[] {
       );
     }
   });
+  for (const r of L.ram?.split ?? []) {
+    const id = `ram_${identSafe(r.name).toLowerCase()}`;
+    if (x) {
+      out.push(
+        `PROVIDE(_${id}_start = ${formatAddr(r.start)});`,
+        `PROVIDE(_${id}_size = ${formatHex(r.size)});`,
+        `PROVIDE(_${id}_end = _${id}_start + _${id}_size);`,
+      );
+    } else {
+      out.push(`PROVIDE(_${id}_start = ${formatAddr(r.start)});`, `PROVIDE(_${id}_size = ${formatHex(r.size)});`, `PROVIDE(_${id}_end = ${formatAddr(r.end)});`);
+    }
+  }
   return out;
 }
 
@@ -87,6 +119,8 @@ function banner(config: Config, L: Layout, p: ResolvedPartition, mode: string): 
       ` * Inactive bank copy for update uploads: ${formatAddr(p.inactiveStart)} .. ${formatAddr(p.inactiveStart + p.size - 1n)}`,
     );
   }
+  const region = L.ram?.split.length ? ramRegionFor(config, L, p.id) : undefined;
+  if (region) lines.push(` * RAM region "${region.name}": ${formatAddr(region.start)} .. ${formatAddr(region.end - 1n)}, ${formatHex(region.size)} bytes = ${formatKb(region.size)}`);
   lines.push(' */');
   return lines;
 }
@@ -232,12 +266,13 @@ export function generateLdFiles(config: Config, L: Layout): OutFile[] {
       ? 'complete Cortex-M template (STARTING POINT — review and adapt before use)'
       : 'MEMORY block only (paste into your generated linker script)';
     const parts: string[] = [banner(config, L, p, mode).join('\n'), ''];
-    parts.push('MEMORY', '{', romLine(config, L, p), ...ramLines(config, L), '}');
+    parts.push('MEMORY', '{', romLine(config, L, p), ...ramLines(config, L, p.id), '}');
     if (config.output.symbols && L.partitions.length) {
       parts.push('', '/* Partition symbols (usable from C via extern) */', ...symbolLines(config, L));
     }
     if (full) {
-      const noinit = L.ram && L.ram.reserved > 0n ? NOINIT_SECTION : '';
+      const hasNoinit = L.ram && (L.ram.split.length ? L.ram.split.some((r) => r.noinit) : L.ram.reserved > 0n);
+      const noinit = hasNoinit ? NOINIT_SECTION : '';
       parts.push('', FULL_TEMPLATE.replace('@NOINIT@', noinit).trimEnd());
     }
     return { key: `ld:${p.id}`, filename: `${names[i]}.ld`, content: parts.join('\n') + '\n', lang: 'ld' as const };
@@ -290,6 +325,17 @@ export function generateHeader(config: Config, L: Layout): OutFile {
         def('RAM_NOINIT_START', L.ram.start + L.ram.size - L.ram.reserved, 'shared no-init area'),
         def('RAM_NOINIT_SIZE', L.ram.reserved),
       );
+    }
+    for (const r of L.ram.split) {
+      const id = identSafe(r.name).toUpperCase();
+      lines.push(
+        '',
+        `/* RAM region ${r.name}${r.noinit ? ' — shared no-init area' : ''} */`,
+        def(`RAM_REGION_${id}_START`, r.start),
+        def(`RAM_REGION_${id}_SIZE`, r.size, formatKb(r.size)),
+        def(`RAM_REGION_${id}_END`, r.end),
+      );
+      if (r.noinit) lines.push(def('RAM_NOINIT_START', r.start), def('RAM_NOINIT_SIZE', r.size));
     }
   }
   lines.push('', '#endif /* MEMORY_MAP_H */', '');

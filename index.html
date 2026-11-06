@@ -13,7 +13,7 @@
       } catch (e) {}
     </script>
   </head>
-  <body data-dual="false">
+  <body data-dual="false" data-split="false">
     <a class="skip" href="#main">Skip to content</a>
     <header class="top">
       <div class="brand">
@@ -70,7 +70,8 @@
               <input data-bind="ram.reservedTop" autocomplete="off" spellcheck="false" />
               <small class="readout" data-readout="ram.reservedTop"></small></label>
           </div>
-          <p class="hint">Reserved RAM becomes a separate <code>RAM_NOINIT</code> region at the top, e.g. for flags shared between bootloader and application.</p>
+          <p class="hint nosplit-only">Reserved RAM becomes a separate <code>RAM_NOINIT</code> region at the top, e.g. for flags shared between bootloader and application. Need more than one region? Use <em>Split RAM</em> below.</p>
+          <p class="hint split-only">RAM is split into regions below, so the reserved-at-top field is not used (a no-init region replaces it).</p>
         </section>
       </div>
 
@@ -81,6 +82,28 @@
         </div>
         <div id="rows" class="rows"></div>
         <p class="hint">Leave <em>Offset</em> empty to place a partition right after the previous one. Offsets are relative to the start of the region (or bank). “Fill” takes all remaining space (last partition only).</p>
+      </section>
+
+      <section class="card" aria-labelledby="h-ramsplit">
+        <div class="card-head">
+          <h2 id="h-ramsplit">RAM split <span class="muted">(optional)</span></h2>
+          <div class="toolbar">
+            <button type="button" id="btn-ram-add" class="split-only">+ Add RAM region</button>
+            <button type="button" id="btn-ram-split" class="primary">Split RAM into regions</button>
+          </div>
+        </div>
+        <p class="hint nosplit-only" style="margin-top:0">Give the bootloader and the application their own RAM, plus an optional shared no-init area. Each partition's <code>.ld</code> then links against its own region. Existing layouts keep working unchanged until you split.</p>
+        <div class="split-only">
+          <div class="fields">
+            <label class="field"><span>Snap step when dragging</span>
+              <input data-bind="ram.step" autocomplete="off" spellcheck="false" />
+              <small class="readout" data-readout="ram.step"></small></label>
+          </div>
+          <div id="ram-rows" class="rows"></div>
+          <div id="ram-map" class="ram-map"></div>
+          <div class="table-wrap"><table id="ram-summary"></table></div>
+          <p class="hint">Assign a region to each partition with its <em>RAM region</em> selector. Regions must not overlap — to share RAM, assign both partitions to the same region. The no-init region (at most one) is added to every script as <code>RAM_NOINIT</code>.</p>
+        </div>
       </section>
 
       <section class="card" aria-labelledby="h-map">

@@ -1,4 +1,5 @@
 import type { Layout } from '../core/layout';
+import type { PartitionInput } from '../core/model';
 import type { Issue } from '../core/validate';
 import { formatAddr, formatHex, formatKb } from '../core/units';
 import { h } from './dom';
@@ -21,9 +22,14 @@ export function renderStats(el: HTMLElement, L: Layout, issues: Issue[]): void {
   const warns = issues.filter((i) => i.severity === 'warning').length;
   const kids = [stat('Region', `${formatHex(L.regionSize)} · ${formatKb(L.regionSize)}`)];
   if (L.dual) kids.push(stat('Per bank', `${formatHex(L.bankSize)} · ${formatKb(L.bankSize)}`));
+  const ram = L.ram;
+  const ramStats = ram && ram.split.length
+    ? [stat('RAM used', `${formatHex(ram.used)} · ${formatKb(ram.used)}`), stat('RAM unused', `${ram.unused} B · ${formatHex(ram.unused)} · ${formatKb(ram.unused)}`)]
+    : [];
   kids.push(
     stat(L.dual ? 'Used per bank' : 'Used', `${formatHex(L.usedPerBank)} · ${formatKb(L.usedPerBank)}`),
     stat(L.dual ? 'Unused per bank' : 'Unused', `${L.unusedPerBank} B · ${formatHex(L.unusedPerBank)} · ${formatKb(L.unusedPerBank)}`),
+    ...ramStats,
     stat('Errors / warnings', `${errs} / ${warns}`),
   );
   el.replaceChildren(...kids);
@@ -48,4 +54,28 @@ export function renderSummary(table: HTMLElement, L: Layout): void {
     h('thead', {}, h('tr', {}, ...head.map(th))),
     h('tbody', {}, ...(rows.length ? rows : [h('tr', {}, h('td', { colspan: head.length, class: '' }, 'No partitions yet.'))])),
   );
+}
+
+/** Summary table of the RAM regions and which partitions link against them. */
+export function renderRamSummary(table: HTMLElement, L: Layout, partitions: Map<string, PartitionInput>): void {
+  const ram = L.ram;
+  if (!ram || !ram.split.length) {
+    table.replaceChildren();
+    return;
+  }
+  const firstMain = ram.split.find((r) => !r.noinit);
+  const th = (t: string) => h('th', { scope: 'col' }, t);
+  const rows = ram.split.map((r) => {
+    const users = r.noinit
+      ? 'all (as RAM_NOINIT)'
+      : [...partitions.values()].filter((p) => p.ram === r.id || (!p.ram && firstMain?.id === r.id)).map((p) => p.name || '(unnamed)').join(', ') || '—';
+    return h('tr', {},
+      h('td', {}, h('span', { class: 'swatch', style: `background:${r.color}` }), r.name || '(unnamed)'),
+      h('td', { class: 'mono' }, formatAddr(r.start)),
+      h('td', { class: 'mono' }, r.size > 0n ? formatAddr(r.end - 1n) : '—'),
+      h('td', { class: 'mono' }, `${formatHex(r.size)} · ${formatKb(r.size)}`),
+      h('td', {}, r.noinit ? 'shared no-init' : 'RAM'),
+      h('td', {}, users));
+  });
+  table.replaceChildren(h('thead', {}, h('tr', {}, ...['RAM region', 'Start', 'Last byte', 'Size', 'Type', 'Used by'].map(th))), h('tbody', {}, ...rows));
 }

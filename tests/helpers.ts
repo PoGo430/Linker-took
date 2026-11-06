@@ -4,7 +4,7 @@ import { validate } from '../src/core/validate';
 import { PRESETS } from '../src/core/presets';
 
 export const P = (name: string, size: string, extra: Partial<PartitionInput> = {}): PartitionInput => ({
-  id: name, name, size, offset: '', fill: false, color: '#888888', kind: 'update', ...extra,
+  id: name, name, size, offset: '', fill: false, color: '#888888', kind: 'update', ram: '', ...extra,
 });
 
 export function cfg(partitions: PartitionInput[], over: Partial<Config> = {}): Config {
